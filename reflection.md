@@ -82,10 +82,19 @@ planner chooses by priority and then presents chronologically.
   exactly what happens in the sample output. A knapsack-style optimiser would pack
   better, but it would be harder to explain, and an explanation ("why is brushing in my
   plan and playtime out?") is worth more here than five reclaimed minutes.
-- **Conflicts are detected but not resolved.** `find_conflicts()` returns warnings and the
-  plan is still produced. A pet owner can judge whether two overlapping tasks are a real
+- **Conflicts are detected and advised on, but never auto-fixed.** `find_conflicts()`
+  returns warnings, `resolve_conflicts()` adds "move this to 07:40" suggestions from the
+  free-slot search, and the plan is still produced either way. Nothing is moved without
+  the owner saying so: a pet owner can judge whether two overlapping tasks are a real
   problem (meds while eating breakfast is fine; two walks is not) far better than my
   heuristic could.
+- **The free-slot search assumes a fixed 07:00-21:00 day** and treats every pending task
+  as blocking, with no notion of which tasks could overlap harmlessly. It is a suggestion
+  engine, not a calendar solver.
+- **A missed recurring task is caught up, not recorded.** Completing a three-week-stale
+  weekly task rolls it to the next future same weekday and says nothing about the three
+  missed instances. For pet care that is the right default — you cannot retroactively walk
+  a dog — but a meds log would need the opposite behaviour.
 - **Overlap is interval-based, but durations are assumed accurate.** I chose true interval
   overlap (`start < other_end and other_start < end`) over the simpler exact-time match,
   so a 07:30 breakfast and 07:35 meds are caught. The cost is that conflict quality now
@@ -117,6 +126,14 @@ separate contexts so the design conversation didn't bleed into the algorithm wor
 - **UI**: asked specifically how to keep an object alive across Streamlit reruns, which
   is what produced the `get_owner()` / `st.session_state` pattern instead of rebuilding
   the `Owner` on every click.
+
+- **Model comparison**: for the trickiest piece of logic (rescheduling a recurring task
+  that has gone stale) I put the same self-contained spec to a second, smaller model
+  (Claude Haiku 4.5) and compared it with my own. Full write-up in `ai_interactions.md`
+  § Prompt Comparison. It found a real gap I had missed — a single roll-forward leaves a
+  month-stale weekly task still in the past — while its implementation read the clock
+  inside the dataclass, which would have made the method untestable. Shipping the idea
+  without the implementation was the useful outcome.
 
 The prompts that worked best named the constraint rather than the code: "the scheduler
 must not own task data, it reads through the Owner" produced better results than "write
@@ -165,6 +182,15 @@ reasoning without raising.
   not flagged; same time on different days not flagged.
 - **Planning** — budget respected with the overflow reported as skipped; output in time
   order; completed tasks don't consume budget; empty household doesn't crash.
+- **Free-slot search** (stretch) — busy intervals merge; the first gap big enough wins;
+  a solid day returns `None`; completed tasks don't block; a suggestion moves a task
+  later, and a clash-free task is told to stay put.
+- **Stale recurrence** (stretch) — an overdue weekly task keeps its weekday and lands
+  within the next seven days; an overdue daily task resumes tomorrow; `catch_up=False`
+  advances exactly one step; `next_occurrence()` with no argument is clock-independent.
+- **Persistence** (stretch) — save/load round-trips identically, dates come back as
+  `date` objects the `Scheduler` can still use, and loading a missing file returns
+  `None` instead of raising.
 
 The negative tests matter most. Any sloppy overlap check will flag a real conflict; what
 separates a useful warning from noise is *not* flagging an 08:00–08:30 walk against an
@@ -172,12 +198,13 @@ separates a useful warning from noise is *not* flagging an 08:00–08:30 walk ag
 
 **b. Confidence**
 
-★★★★☆ — four of five. The logic layer behaves under every case I tested, and the CLI
-demo exercises the same paths end to end. What I would test next:
+★★★★☆ — four of five, across 35 tests. The logic layer behaves under every case I
+tested, and the CLI demo exercises the same paths end to end. What I would test next:
 
 1. **Malformed input.** `parse_time()` trusts its input; `"25:00"`, `"7"` or `""` would
    raise or silently produce nonsense. The UI's `st.time_input` makes this hard to hit
-   today, but JSON persistence or a CSV import would.
+   today, but a hand-edited `data.json` would walk straight into it — persistence turned
+   this from theoretical into likely, and `from_dict()` does no validation.
 2. **Tasks crossing midnight.** A 23:30 task of 45 minutes gets `end_minutes = 1455`,
    which is past the end of the day; it will never conflict with a 00:10 task tomorrow.
 3. **The UI layer itself.** My `AppTest` run was a manual smoke check, not a committed
@@ -200,12 +227,14 @@ in plain text before the UI existed.
 
 **b. What you would improve**
 
-Persistence. Everything lives in `st.session_state`, so restarting the app wipes the
-household — the one thing that stops this being genuinely usable. Next iteration:
-`save_to_json`/`load_from_json` on `Owner`, with `Task.due_date` serialised as ISO
-strings. Second on the list is making conflicts actionable — offering "move this task 30
-minutes later" instead of only warning — which would need a "next free slot" search over
-the day's occupied intervals.
+The two gaps I named mid-project — persistence and actionable conflicts — are both done
+now as stretch features (`data.json` with autosave, and the free-slot search behind
+`resolve_conflicts()`). What is left is validation and durability at the edges:
+`Task.from_dict()` trusts whatever is in the JSON, `save_to_json()` writes in place with
+no atomic replace or backup, and nothing handles a task crossing midnight. I would also
+replace the plan's `dict` return with a small `Plan` dataclass now that three callers
+(CLI, UI, tests) read the same keys — the argument I made for the dict gets weaker with
+every new consumer.
 
 **c. Key takeaway**
 
@@ -217,4 +246,7 @@ AI was fastest at the parts I could already specify precisely, and most useful w
 asked it to attack my assumptions (the edge-case test plan) rather than write code. My
 job as the lead architect was holding the invariants and knowing which suggestions to
 turn down: the string sort and the exact-time conflict check were both plausible, both
-would have passed a casual read, and both were wrong for this system.
+would have passed a casual read, and both were wrong for this system. The model
+comparison sharpened the same point: the smaller model's answer contained an idea worth
+keeping wrapped around a design decision worth rejecting, and separating those two things
+is the part of the job that stays mine.

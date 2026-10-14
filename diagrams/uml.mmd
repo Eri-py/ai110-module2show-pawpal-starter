@@ -13,8 +13,10 @@ classDiagram
         +int end_minutes
         +bool is_recurring
         +mark_complete() None
-        +next_occurrence() Task
+        +next_occurrence(after) Task
         +overlaps(other) bool
+        +to_dict() dict
+        +from_dict(data) Task
     }
 
     class Pet {
@@ -27,6 +29,8 @@ classDiagram
         +remove_task(task) None
         +tasks_for_date(day) list~Task~
         +pending_tasks(day) list~Task~
+        +to_dict() dict
+        +from_dict(data) Pet
     }
 
     class Owner {
@@ -37,6 +41,10 @@ classDiagram
         +get_pet(name) Pet
         +all_tasks() list~Task~
         +pet_for_task(task) Pet
+        +to_dict() dict
+        +from_dict(data) Owner
+        +save_to_json(path) Path
+        +load_from_json(path) Owner
     }
 
     class Scheduler {
@@ -46,9 +54,13 @@ classDiagram
         +filter_tasks(tasks, pet_name, completed, priority, day) list~Task~
         +tasks_for_date(day) list~Task~
         +todays_schedule(pet_name) list~Task~
-        +mark_task_complete(task) Task
+        +mark_task_complete(task, catch_up) Task
         +find_conflicts(tasks) list~str~
         +has_conflicts(tasks) bool
+        +busy_intervals(day, pet_name, ignore) list
+        +next_free_slot(duration, day, pet_name, earliest, latest, ignore) str
+        +suggest_reschedule(task, pet_only) str
+        +resolve_conflicts(day, pet_only) list~str~
         +build_daily_plan(day, available_minutes) dict
         +format_schedule(tasks, title) str
     }
