@@ -4,18 +4,38 @@ from datetime import date, timedelta
 
 import streamlit as st
 
-from pawpal_system import PRIORITIES, Owner, Pet, Scheduler, Task, format_time
+from pawpal_system import (
+    DATA_FILE,
+    PRIORITIES,
+    Owner,
+    Pet,
+    Scheduler,
+    Task,
+    format_time,
+)
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
+
+
+def autosave(owner: Owner) -> None:
+    """Persist the household if the sidebar's autosave toggle is on."""
+    if st.session_state.get("autosave", True):
+        owner.save_to_json()
 
 
 # --------------------------------------------------------------------------
 # Session state: Streamlit reruns this file top to bottom on every click, so
 # the Owner lives in st.session_state and is only built once per session.
+# On the very first run we try data.json, so the household survives a restart.
 # --------------------------------------------------------------------------
 def get_owner() -> Owner:
-    """Return the session's Owner, seeding a starter household on first run."""
+    """Return the session's Owner: from data.json if present, else a seeded one."""
     if "owner" not in st.session_state:
+        saved = Owner.load_from_json()
+        if saved is not None:
+            st.session_state.owner = saved
+            st.session_state.loaded_from_disk = True
+            return saved
         owner = Owner(name="Jordan", daily_minutes_available=90)
         biscuit = owner.add_pet(Pet(name="Biscuit", species="dog", age=4))
         mochi = owner.add_pet(Pet(name="Mochi", species="cat", age=2))
@@ -83,11 +103,37 @@ with st.sidebar:
                 st.warning(f"{new_pet_name} is already in the household.")
             else:
                 owner.add_pet(Pet(name=new_pet_name.strip(), species=new_species, age=int(new_age)))
+                autosave(owner)
                 st.success(f"Added {new_pet_name.strip()}.")
 
     st.subheader("Pets")
     for pet in owner.pets:
         st.write(f"- {pet} — {len(pet.pending_tasks())} pending today")
+
+    st.subheader("💾 Saved data")
+    st.checkbox(
+        "Autosave to data.json",
+        value=True,
+        key="autosave",
+        help="Writes the household to data.json after every change, so it survives "
+        "an app restart.",
+    )
+    save_col, load_col = st.columns(2)
+    with save_col:
+        if st.button("Save now"):
+            st.success(f"Saved to {owner.save_to_json().name}")
+    with load_col:
+        if st.button("Reload"):
+            saved = Owner.load_from_json()
+            if saved is None:
+                st.warning("No data.json yet — save first.")
+            else:
+                st.session_state.owner = saved
+                st.rerun()
+    if st.session_state.get("loaded_from_disk"):
+        st.caption(f"Loaded from {DATA_FILE.name} at startup.")
+    else:
+        st.caption("Starter household (no data.json found at startup).")
 
 
 st.title("🐾 PawPal+")
@@ -129,10 +175,14 @@ with st.form("add_task", clear_on_submit=True):
                 due_date=due,
             )
             owner.get_pet(pet_choice).add_task(task)
+            autosave(owner)
             clash = scheduler.find_conflicts(scheduler.tasks_for_date(due))
             st.success(f"Added '{task.description}' for {pet_choice} at {task.time}.")
             for warning in clash:
                 st.warning(f"⚠️ {warning}")
+            suggestion = scheduler.suggest_reschedule(task)
+            if clash and suggestion and suggestion != task.time:
+                st.info(f"💡 Next free slot for '{task.description}': {suggestion}.")
 
 st.divider()
 
@@ -161,6 +211,8 @@ conflicts = scheduler.find_conflicts(scheduler.tasks_for_date(view_day))
 if conflicts:
     for warning in conflicts:
         st.warning(f"⚠️ {warning}")
+    for suggestion in scheduler.resolve_conflicts(view_day):
+        st.info(f"💡 {suggestion}")
 else:
     st.success("✅ No scheduling conflicts for this day.")
 
@@ -176,6 +228,7 @@ if pending:
     done_label = st.selectbox("Task", list(labels))
     if st.button("Mark complete ✅"):
         follow_up = scheduler.mark_task_complete(labels[done_label])
+        autosave(owner)
         st.success(f"Completed '{labels[done_label].description}'.")
         if follow_up:
             st.info(
@@ -217,3 +270,20 @@ if st.button("Generate plan"):
     with st.expander("Why this plan?", expanded=True):
         for reason in plan["reasons"]:
             st.write(f"- {reason}")
+
+st.divider()
+
+st.subheader("🔍 Find a free slot")
+st.caption("Where could a new task go without clashing with anything already booked?")
+slot_pet_col, slot_len_col = st.columns(2)
+with slot_pet_col:
+    slot_pet = st.selectbox("For", ["All pets"] + [pet.name for pet in owner.pets], key="slot_pet")
+with slot_len_col:
+    slot_len = st.number_input("Minutes needed", min_value=5, max_value=240, value=30, step=5)
+slot = scheduler.next_free_slot(
+    int(slot_len), day=view_day, pet_name=None if slot_pet == "All pets" else slot_pet
+)
+if slot:
+    st.success(f"✅ Earliest {int(slot_len)}-minute opening: **{slot}**")
+else:
+    st.warning(f"No {int(slot_len)}-minute gap left between 07:00 and 21:00 on this day.")

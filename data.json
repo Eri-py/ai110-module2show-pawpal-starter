@@ -1,0 +1,122 @@
+{
+  "name": "Jordan",
+  "daily_minutes_available": 60,
+  "pets": [
+    {
+      "name": "Biscuit",
+      "species": "dog",
+      "age": 4,
+      "notes": "",
+      "tasks": [
+        {
+          "description": "Evening walk",
+          "time": "18:30",
+          "duration_minutes": 30,
+          "priority": "medium",
+          "frequency": "daily",
+          "due_date": "2026-10-13",
+          "completed": false,
+          "pet_name": "Biscuit"
+        },
+        {
+          "description": "Morning walk",
+          "time": "08:00",
+          "duration_minutes": 30,
+          "priority": "high",
+          "frequency": "daily",
+          "due_date": "2026-10-13",
+          "completed": true,
+          "pet_name": "Biscuit"
+        },
+        {
+          "description": "Brush coat",
+          "time": "20:00",
+          "duration_minutes": 15,
+          "priority": "low",
+          "frequency": "weekly",
+          "due_date": "2026-10-13",
+          "completed": false,
+          "pet_name": "Biscuit"
+        },
+        {
+          "description": "Morning walk",
+          "time": "08:00",
+          "duration_minutes": 30,
+          "priority": "high",
+          "frequency": "daily",
+          "due_date": "2026-10-14",
+          "completed": false,
+          "pet_name": "Biscuit"
+        }
+      ]
+    },
+    {
+      "name": "Mochi",
+      "species": "cat",
+      "age": 2,
+      "notes": "",
+      "tasks": [
+        {
+          "description": "Breakfast",
+          "time": "07:30",
+          "duration_minutes": 10,
+          "priority": "high",
+          "frequency": "daily",
+          "due_date": "2026-10-13",
+          "completed": false,
+          "pet_name": "Mochi"
+        },
+        {
+          "description": "Thyroid meds",
+          "time": "07:35",
+          "duration_minutes": 5,
+          "priority": "high",
+          "frequency": "daily",
+          "due_date": "2026-10-13",
+          "completed": false,
+          "pet_name": "Mochi"
+        },
+        {
+          "description": "Play session",
+          "time": "19:00",
+          "duration_minutes": 20,
+          "priority": "medium",
+          "frequency": "once",
+          "due_date": "2026-10-13",
+          "completed": false,
+          "pet_name": "Mochi"
+        },
+        {
+          "description": "Evening meds",
+          "time": "21:00",
+          "duration_minutes": 5,
+          "priority": "high",
+          "frequency": "daily",
+          "due_date": "2026-10-13",
+          "completed": false,
+          "pet_name": "Mochi"
+        },
+        {
+          "description": "Flea treatment",
+          "time": "21:00",
+          "duration_minutes": 5,
+          "priority": "medium",
+          "frequency": "weekly",
+          "due_date": "2026-09-20",
+          "completed": true,
+          "pet_name": "Mochi"
+        },
+        {
+          "description": "Flea treatment",
+          "time": "21:00",
+          "duration_minutes": 5,
+          "priority": "medium",
+          "frequency": "weekly",
+          "due_date": "2026-10-18",
+          "completed": false,
+          "pet_name": "Mochi"
+        }
+      ]
+    }
+  ]
+}
