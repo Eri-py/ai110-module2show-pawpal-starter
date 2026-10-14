@@ -244,3 +244,163 @@ def test_daily_plan_skips_completed_tasks(household):
     plan = scheduler.build_daily_plan(available_minutes=60)
     assert plan["scheduled"] == []
     assert plan["minutes_used"] == 0
+
+
+# -- free-slot search (stretch: third algorithmic capability) ---------------
+
+
+def test_busy_intervals_merge_overlapping_tasks(household):
+    """Overlapping and touching tasks collapse into one busy block."""
+    owner, scheduler = household
+    pet = owner.get_pet("Mochi")
+    pet.add_task(Task(description="Breakfast", time="07:30", duration_minutes=10))
+    pet.add_task(Task(description="Meds", time="07:35", duration_minutes=10))
+    pet.add_task(Task(description="Play", time="19:00", duration_minutes=20))
+    assert scheduler.busy_intervals() == [(450, 465), (1140, 1160)]
+
+
+def test_next_free_slot_finds_the_first_gap(household):
+    """The first opening wide enough for the requested duration wins."""
+    owner, scheduler = household
+    pet = owner.get_pet("Biscuit")
+    pet.add_task(Task(description="Walk", time="07:00", duration_minutes=30))
+    pet.add_task(Task(description="Vet call", time="07:45", duration_minutes=15))
+    # 07:30-07:45 is only 15 min, so a 20-min task has to wait until 08:00.
+    assert scheduler.next_free_slot(15) == "07:30"
+    assert scheduler.next_free_slot(20) == "08:00"
+
+
+def test_next_free_slot_returns_none_when_the_window_is_full(household):
+    """A day booked solid inside the window yields no slot."""
+    owner, scheduler = household
+    pet = owner.get_pet("Biscuit")
+    pet.add_task(Task(description="All day", time="07:00", duration_minutes=14 * 60))
+    assert scheduler.next_free_slot(30, earliest="07:00", latest="21:00") is None
+
+
+def test_next_free_slot_ignores_completed_tasks(household):
+    """Finished tasks do not block the calendar."""
+    owner, scheduler = household
+    pet = owner.get_pet("Biscuit")
+    done = pet.add_task(Task(description="Walk", time="07:00", duration_minutes=60))
+    done.mark_complete()
+    assert scheduler.next_free_slot(30, earliest="07:00") == "07:00"
+
+
+def test_suggest_reschedule_moves_the_task_later(household):
+    """A clashing task is offered the next opening after its own start time."""
+    owner, scheduler = household
+    pet = owner.get_pet("Mochi")
+    pet.add_task(Task(description="Breakfast", time="07:30", duration_minutes=10))
+    meds = pet.add_task(Task(description="Meds", time="07:35", duration_minutes=5))
+    assert scheduler.suggest_reschedule(meds) == "07:40"
+
+
+def test_suggest_reschedule_keeps_a_clash_free_task_where_it_is(household):
+    """A task that conflicts with nothing is told to stay put."""
+    owner, scheduler = household
+    pet = owner.get_pet("Mochi")
+    solo = pet.add_task(Task(description="Play", time="19:00", duration_minutes=20))
+    assert scheduler.suggest_reschedule(solo) == "19:00"
+
+
+def test_resolve_conflicts_names_a_new_time(household):
+    """Each conflict becomes one actionable suggestion."""
+    owner, scheduler = household
+    pet = owner.get_pet("Mochi")
+    pet.add_task(Task(description="Breakfast", time="07:30", duration_minutes=10))
+    pet.add_task(Task(description="Meds", time="07:35", duration_minutes=5))
+    suggestions = scheduler.resolve_conflicts()
+    assert len(suggestions) == 1
+    assert "Move 'Meds'" in suggestions[0] and "07:40" in suggestions[0]
+
+
+def test_resolve_conflicts_is_quiet_when_nothing_clashes(household):
+    """No conflicts means no suggestions."""
+    owner, scheduler = household
+    owner.get_pet("Biscuit").add_task(Task(description="Walk", time="08:00"))
+    assert scheduler.resolve_conflicts() == []
+
+
+# -- stale recurrence catch-up ---------------------------------------------
+
+
+def test_stale_weekly_task_catches_up_to_a_future_same_weekday(household):
+    """A weekly task three weeks overdue lands on the next future same weekday."""
+    owner, scheduler = household
+    pet = owner.get_pet("Mochi")
+    stale = pet.add_task(
+        Task(description="Flea treatment", time="21:00", frequency="weekly",
+             due_date=TODAY - timedelta(days=23))
+    )
+    follow_up = scheduler.mark_task_complete(stale)
+    assert follow_up.due_date > TODAY
+    assert follow_up.due_date.weekday() == stale.due_date.weekday()
+    assert (follow_up.due_date - stale.due_date).days % 7 == 0
+    assert (follow_up.due_date - TODAY).days <= 7
+
+
+def test_stale_daily_task_catches_up_to_tomorrow(household):
+    """A daily task weeks overdue resumes tomorrow, not weeks ago."""
+    owner, scheduler = household
+    pet = owner.get_pet("Biscuit")
+    stale = pet.add_task(
+        Task(description="Walk", time="08:00", frequency="daily",
+             due_date=TODAY - timedelta(days=30))
+    )
+    assert scheduler.mark_task_complete(stale).due_date == TOMORROW
+
+
+def test_catch_up_can_be_switched_off(household):
+    """With catch_up=False the next date is exactly one step on, clock aside."""
+    owner, scheduler = household
+    pet = owner.get_pet("Biscuit")
+    stale = pet.add_task(
+        Task(description="Walk", time="08:00", frequency="daily",
+             due_date=TODAY - timedelta(days=30))
+    )
+    follow_up = scheduler.mark_task_complete(stale, catch_up=False)
+    assert follow_up.due_date == TODAY - timedelta(days=29)
+
+
+def test_next_occurrence_is_clock_independent_by_default():
+    """Task.next_occurrence() with no argument never consults today's date."""
+    task = Task(description="Walk", time="08:00", frequency="weekly",
+                due_date=date(2020, 1, 1))
+    assert task.next_occurrence().due_date == date(2020, 1, 8)
+
+
+# -- persistence (stretch: data.json) --------------------------------------
+
+
+def test_save_and_load_round_trip(household, tmp_path):
+    """Saving then loading reproduces the household exactly."""
+    owner, _ = household
+    owner.get_pet("Biscuit").add_task(
+        Task(description="Walk", time="08:00", frequency="daily", priority="high")
+    )
+    owner.get_pet("Mochi").add_task(
+        Task(description="Meds", time="07:35", duration_minutes=5, due_date=TOMORROW)
+    )
+    path = owner.save_to_json(tmp_path / "data.json")
+
+    reloaded = Owner.load_from_json(path)
+
+    assert reloaded.to_dict() == owner.to_dict()
+    assert reloaded.name == owner.name
+    assert reloaded.daily_minutes_available == owner.daily_minutes_available
+    assert [pet.name for pet in reloaded.pets] == ["Biscuit", "Mochi"]
+    assert reloaded.get_pet("Mochi").tasks[0].due_date == TOMORROW
+
+
+def test_loaded_tasks_stay_usable_by_the_scheduler(household, tmp_path):
+    """Dates survive as date objects, so the Scheduler still works after a load."""
+    owner, _ = household
+    owner.get_pet("Biscuit").add_task(Task(description="Walk", time="08:00"))
+    reloaded = Owner.load_from_json(owner.save_to_json(tmp_path / "data.json"))
+    assert [t.description for t in Scheduler(reloaded).todays_schedule()] == ["Walk"]
+
+
+def test_load_from_a_missing_file_returns_none(tmp_path):
+    """A first run with no saved data is not an error."""
+    assert Owner.load_from_json(tmp_path / "nothing-here.json") is None

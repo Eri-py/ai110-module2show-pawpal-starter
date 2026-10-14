@@ -6,8 +6,13 @@ can be driven from `main.py` (CLI) or `app.py` (UI) alike.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
+from pathlib import Path
+
+#: Default file used by Owner.save_to_json() / Owner.load_from_json().
+DATA_FILE = Path(__file__).with_name("data.json")
 
 #: Allowed priority labels, most urgent first.
 PRIORITIES = ("high", "medium", "low")
@@ -67,18 +72,28 @@ class Task:
         """Flag this task as done."""
         self.completed = True
 
-    def next_occurrence(self) -> Task | None:
-        """Return the next instance of a recurring task, or None if it is one-off."""
+    def next_occurrence(self, after: date | None = None) -> Task | None:
+        """Return the next instance of a recurring task, or None if it is one-off.
+
+        By default this is simply `due_date + one step`, which keeps the result
+        independent of the clock. Pass `after` (normally today) to catch up a
+        stale task: the new date is then the first occurrence strictly after
+        `after`, reached by whole-period arithmetic so a weekly task keeps its
+        weekday and a years-stale task costs one division, not a loop.
+        """
         step = RECURRENCE_STEP.get(self.frequency)
         if step is None:
             return None
+        due = self.due_date + step
+        if after is not None and due <= after:
+            due += ((after - due) // step + 1) * step
         return Task(
             description=self.description,
             time=self.time,
             duration_minutes=self.duration_minutes,
             priority=self.priority,
             frequency=self.frequency,
-            due_date=self.due_date + step,
+            due_date=due,
             completed=False,
             pet_name=self.pet_name,
         )
@@ -88,6 +103,19 @@ class Task:
         if self.due_date != other.due_date:
             return False
         return self.start_minutes < other.end_minutes and other.start_minutes < self.end_minutes
+
+    def to_dict(self) -> dict:
+        """Return a JSON-safe dict (dates become ISO strings)."""
+        data = asdict(self)
+        data["due_date"] = self.due_date.isoformat()
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Task:
+        """Rebuild a Task from the dict produced by `to_dict()`."""
+        fields = dict(data)
+        fields["due_date"] = date.fromisoformat(fields["due_date"])
+        return cls(**fields)
 
     def __str__(self) -> str:
         """Render the task as one readable schedule line."""
@@ -131,6 +159,29 @@ class Pet:
         """Return the not-yet-completed tasks due on `day`."""
         return [task for task in self.tasks_for_date(day) if not task.completed]
 
+    def to_dict(self) -> dict:
+        """Return a JSON-safe dict for this pet and its tasks."""
+        return {
+            "name": self.name,
+            "species": self.species,
+            "age": self.age,
+            "notes": self.notes,
+            "tasks": [task.to_dict() for task in self.tasks],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Pet:
+        """Rebuild a Pet (and its tasks) from the dict produced by `to_dict()`."""
+        pet = cls(
+            name=data["name"],
+            species=data.get("species", "dog"),
+            age=data.get("age"),
+            notes=data.get("notes", ""),
+        )
+        for task_data in data.get("tasks", []):
+            pet.add_task(Task.from_dict(task_data))
+        return pet
+
     def __str__(self) -> str:
         """Render the pet as a short label."""
         age = f", {self.age}y" if self.age is not None else ""
@@ -167,6 +218,41 @@ class Owner:
             if task in pet.tasks:
                 return pet
         return None
+
+    # -- persistence -------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Return a JSON-safe dict for the whole household."""
+        return {
+            "name": self.name,
+            "daily_minutes_available": self.daily_minutes_available,
+            "pets": [pet.to_dict() for pet in self.pets],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Owner:
+        """Rebuild an Owner (with pets and tasks) from `to_dict()` output."""
+        owner = cls(
+            name=data.get("name", "Owner"),
+            daily_minutes_available=data.get("daily_minutes_available", 120),
+        )
+        for pet_data in data.get("pets", []):
+            owner.add_pet(Pet.from_dict(pet_data))
+        return owner
+
+    def save_to_json(self, path: str | Path = DATA_FILE) -> Path:
+        """Write the household to `path` as JSON and return the path written."""
+        target = Path(path)
+        target.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        return target
+
+    @classmethod
+    def load_from_json(cls, path: str | Path = DATA_FILE) -> Owner | None:
+        """Load a household from `path`, or return None if the file is missing."""
+        source = Path(path)
+        if not source.exists():
+            return None
+        return cls.from_dict(json.loads(source.read_text(encoding="utf-8")))
 
 
 class Scheduler:
@@ -231,10 +317,15 @@ class Scheduler:
 
     # -- recurrence --------------------------------------------------------
 
-    def mark_task_complete(self, task: Task) -> Task | None:
-        """Complete a task; if it recurs, queue the next occurrence and return it."""
+    def mark_task_complete(self, task: Task, catch_up: bool = True) -> Task | None:
+        """Complete a task; if it recurs, queue the next occurrence and return it.
+
+        With `catch_up` (the default) a task whose due date is already in the past
+        is rolled forward to its first future occurrence instead of landing in the
+        past again -- what you want after not opening the app for a week.
+        """
         task.mark_complete()
-        follow_up = task.next_occurrence()
+        follow_up = task.next_occurrence(after=date.today() if catch_up else None)
         if follow_up is None:
             return None
         pet = self.owner.pet_for_task(task)
@@ -317,6 +408,100 @@ class Scheduler:
             "conflicts": self.find_conflicts(chosen),
             "reasons": reasons,
         }
+
+    # -- free-slot search --------------------------------------------------
+
+    def busy_intervals(
+        self,
+        day: date | None = None,
+        pet_name: str | None = None,
+        ignore: Task | None = None,
+    ) -> list[tuple[int, int]]:
+        """Return the day's occupied (start, end) minute ranges, merged and sorted."""
+        target = day or date.today()
+        tasks = [
+            task
+            for task in self.filter_tasks(day=target, pet_name=pet_name, completed=False)
+            if task is not ignore
+        ]
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted((t.start_minutes, t.end_minutes) for t in tasks):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        return merged
+
+    def next_free_slot(
+        self,
+        duration_minutes: int,
+        day: date | None = None,
+        pet_name: str | None = None,
+        earliest: str = "07:00",
+        latest: str = "21:00",
+        ignore: Task | None = None,
+    ) -> str | None:
+        """Return the earliest 'HH:MM' with `duration_minutes` free, or None if full.
+
+        Walks the gaps between the day's merged busy intervals inside the
+        [earliest, latest] window, so it is O(n log n) in the number of tasks.
+        """
+        window_start, window_end = parse_time(earliest), parse_time(latest)
+        if duration_minutes <= 0 or window_end - window_start < duration_minutes:
+            return None
+        cursor = window_start
+        for start, end in self.busy_intervals(day, pet_name, ignore=ignore):
+            if end <= cursor:
+                continue
+            if start - cursor >= duration_minutes:
+                return format_time(cursor)
+            cursor = max(cursor, end)
+            if cursor + duration_minutes > window_end:
+                return None
+        return format_time(cursor) if cursor + duration_minutes <= window_end else None
+
+    def suggest_reschedule(self, task: Task, pet_only: bool = True) -> str | None:
+        """Return the earliest conflict-free start time for `task`, or None if full.
+
+        The search starts at the task's own time and moves later, so a suggestion
+        reads as "push this back a bit" rather than "get up earlier". The task
+        itself is excluded from the busy map, so a task that does not clash with
+        anything keeps its current time.
+        """
+        return self.next_free_slot(
+            task.duration_minutes,
+            day=task.due_date,
+            pet_name=task.pet_name if pet_only else None,
+            earliest=task.time,
+            latest="23:00",
+            ignore=task,
+        )
+
+    def resolve_conflicts(self, day: date | None = None, pet_only: bool = True) -> list[str]:
+        """Suggest a new time for each conflicting task without changing anything."""
+        target = day or date.today()
+        suggestions: list[str] = []
+        seen: set[int] = set()
+        ordered = self.sort_by_time(self.filter_tasks(day=target, completed=False))
+        for index, task in enumerate(ordered):
+            for other in ordered[index + 1:]:
+                if not task.overlaps(other) or id(other) in seen:
+                    continue
+                if pet_only and task.pet_name != other.pet_name:
+                    continue
+                seen.add(id(other))
+                slot = self.suggest_reschedule(other, pet_only=pet_only)
+                if slot is None:
+                    suggestions.append(
+                        f"'{other.description}' ({other.pet_name}) clashes with "
+                        f"'{task.description}' and the day is full -- shorten something."
+                    )
+                else:
+                    suggestions.append(
+                        f"Move '{other.description}' ({other.pet_name}) from {other.time} "
+                        f"to {slot} to clear its clash with '{task.description}'."
+                    )
+        return suggestions
 
     def format_schedule(
         self, tasks: list[Task] | None = None, title: str = "Today's Schedule"
