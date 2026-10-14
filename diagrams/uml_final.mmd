@@ -1,0 +1,60 @@
+%% PawPal+ -- final UML, matching pawpal_system.py as shipped.
+classDiagram
+    class Task {
+        +str description
+        +str time
+        +int duration_minutes
+        +str priority
+        +str frequency
+        +date due_date
+        +bool completed
+        +str pet_name
+        +int start_minutes
+        +int end_minutes
+        +bool is_recurring
+        +mark_complete() None
+        +next_occurrence() Task
+        +overlaps(other) bool
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +int age
+        +str notes
+        +list~Task~ tasks
+        +add_task(task) Task
+        +remove_task(task) None
+        +tasks_for_date(day) list~Task~
+        +pending_tasks(day) list~Task~
+    }
+
+    class Owner {
+        +str name
+        +int daily_minutes_available
+        +list~Pet~ pets
+        +add_pet(pet) Pet
+        +get_pet(name) Pet
+        +all_tasks() list~Task~
+        +pet_for_task(task) Pet
+    }
+
+    class Scheduler {
+        +Owner owner
+        +sort_by_time(tasks) list~Task~
+        +sort_by_priority(tasks) list~Task~
+        +filter_tasks(tasks, pet_name, completed, priority, day) list~Task~
+        +tasks_for_date(day) list~Task~
+        +todays_schedule(pet_name) list~Task~
+        +mark_task_complete(task) Task
+        +find_conflicts(tasks) list~str~
+        +has_conflicts(tasks) bool
+        +build_daily_plan(day, available_minutes) dict
+        +format_schedule(tasks, title) str
+    }
+
+    Owner "1" --> "0..*" Pet : cares for
+    Pet "1" --> "0..*" Task : has
+    Scheduler "1" --> "1" Owner : plans for
+    Scheduler ..> Task : sorts, filters, completes
+    Task ..> Task : next_occurrence() clones forward
