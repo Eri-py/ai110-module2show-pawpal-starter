@@ -168,7 +168,7 @@ reasoning without raising.
 
 **a. What you tested**
 
-20 tests in `tests/test_pawpal.py`, grouped by concern:
+35 tests in `tests/test_pawpal.py`, grouped by concern:
 
 - **Core object behaviour** — `mark_complete()` flips status; `add_task()` grows the
   pet's list and stamps `pet_name`; `Owner.all_tasks()` spans pets.
